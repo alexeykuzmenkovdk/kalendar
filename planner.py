@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import html
 import json
+import io
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -44,6 +46,7 @@ class Stop:
     port: str
     arrival: str
     departure: str
+    skipped: bool = False
 
 
 @dataclass
@@ -139,7 +142,7 @@ class PlannerService:
 
             stay = self.db.data["stay_days"].get(port, 1)
             departure = arrival + timedelta(days=stay)
-            stops.append(Stop(port=port, arrival=self._fmt_date(arrival), departure=self._fmt_date(departure)))
+            stops.append(Stop(port=port, arrival=self._fmt_date(arrival), departure=self._fmt_date(departure), skipped=False))
 
             current_departure = departure
             idx += 1
@@ -213,18 +216,79 @@ class PlannerService:
 
     def update_plan_from_manual_table(self, plan_id: int, manual_map: Dict[int, Tuple[str, str]]) -> Dict:
         plan = self.get_plan(plan_id)
-        changed = []
+        locked_indices = set()
+
         for idx, stop in enumerate(plan["stops"]):
-            if idx in manual_map:
-                arrival, departure = manual_map[idx]
-                if arrival != stop["arrival"] or departure != stop["departure"]:
-                    changed.append(idx)
+            stop.setdefault("skipped", False)
+            if idx not in manual_map:
+                continue
 
-        for idx in sorted(changed):
             arrival, departure = manual_map[idx]
-            self.manual_update_stop(plan_id, idx, arrival=arrival, departure=departure, propagate=True)
+            if not arrival and not departure:
+                stop["arrival"] = ""
+                stop["departure"] = ""
+                stop["skipped"] = True
+                continue
 
+            if not arrival or not departure:
+                raise ValueError("Для ручного ввода укажите обе даты или очистите обе для пропуска порта")
+
+            self._parse_date(arrival)
+            self._parse_date(departure)
+            if self._parse_date(departure) < self._parse_date(arrival):
+                raise ValueError("Дата отхода не может быть раньше даты прихода")
+
+            stop["arrival"] = arrival
+            stop["departure"] = departure
+            stop["skipped"] = False
+            locked_indices.add(idx)
+
+        start_departure = self._parse_date(plan["start_date"])
+        prev_port = None
+        current_departure = start_departure
+
+        for idx, stop in enumerate(plan["stops"]):
+            if stop.get("skipped"):
+                continue
+
+            if idx in locked_indices:
+                arrival = self._parse_date(stop["arrival"])
+                departure = self._parse_date(stop["departure"])
+            else:
+                if prev_port is None:
+                    arrival = current_departure
+                else:
+                    travel_days = self.db.data["transition_days"][prev_port][stop["port"]]
+                    arrival = current_departure + timedelta(days=travel_days)
+
+                stay_days = self.db.data["stay_days"].get(stop["port"], 1)
+                departure = arrival + timedelta(days=stay_days)
+                stop["arrival"] = self._fmt_date(arrival)
+                stop["departure"] = self._fmt_date(departure)
+
+            prev_port = stop["port"]
+            current_departure = departure
+
+        self.db.save()
         return self.get_plan(plan_id)
+
+    def export_plan_csv(self, plan_id: int) -> str:
+        plan = self.get_plan(plan_id)
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(["plan_id", "ship", "port", "arrival", "departure", "skipped"])
+        for stop in plan["stops"]:
+            writer.writerow(
+                [
+                    plan["id"],
+                    plan["ship"],
+                    stop["port"],
+                    stop.get("arrival", ""),
+                    stop.get("departure", ""),
+                    "yes" if stop.get("skipped") else "no",
+                ]
+            )
+        return buffer.getvalue()
 
     def set_transition(self, from_port: str, to_port: str, days: int) -> None:
         if from_port not in self.db.data["ports"] or to_port not in self.db.data["ports"]:
@@ -350,9 +414,14 @@ def render_index(service: PlannerService, selected_id: Optional[int], flash_text
 <tbody>{''.join(rows_html)}</tbody>
 </table>
 </div>
+<div class='row'>
 <button class='primary' type='submit'>Обновить расписание</button>
+<a href='/plans/{table['plan']['id']}/export' style='text-decoration:none;'><button type='button'>Экспорт CSV</button></a>
+</div>
 </form>
 </section>"""
+
+    port_options = "".join(f"<option value='{html.escape(port)}'>{html.escape(port)}</option>" for port in service.list_ports())
 
     body = f"""
 <section class='card'>
@@ -360,8 +429,11 @@ def render_index(service: PlannerService, selected_id: Optional[int], flash_text
 <form class='row' method='post' action='/plans'>
 <label>Судно<select name='ship'>{ships_options}</select></label>
 <label>Дата старта<input type='date' name='start_date' value='{datetime.now().strftime(DATE_FMT)}'></label>
-<label style='min-width:420px;flex:1;'>Маршрут (через запятую)
-<input type='text' name='route' placeholder='Владивосток, Курильск (о. Итуруп), Корсаков (о. Сахалин)'>
+<label style='min-width:260px;'>Порт<select id='next-port'>{port_options}</select></label>
+<button type='button' id='add-port'>Добавить порт</button>
+<label style='min-width:420px;flex:1;'>Маршрут
+<input type='hidden' name='route' id='route-field'>
+<input type='text' id='route-preview' readonly placeholder='Выберите порты последовательно'>
 </label>
 <button type='submit'>Создать</button>
 </form>
@@ -374,6 +446,32 @@ def render_index(service: PlannerService, selected_id: Optional[int], flash_text
 </form>
 </section>
 {table_html}
+<script>
+(() => {{
+  const addBtn = document.getElementById('add-port');
+  const portSelect = document.getElementById('next-port');
+  const routeField = document.getElementById('route-field');
+  const routePreview = document.getElementById('route-preview');
+  if (!addBtn || !portSelect || !routeField || !routePreview) return;
+
+  const current = [];
+  const redraw = () => {{
+    routeField.value = current.join('||');
+    routePreview.value = current.join(' → ');
+  }};
+
+  addBtn.addEventListener('click', () => {{
+    if (!portSelect.value) return;
+    current.push(portSelect.value);
+    redraw();
+  }});
+
+  routePreview.addEventListener('dblclick', () => {{
+    current.pop();
+    redraw();
+  }});
+}})();
+</script>
 """
 
     flash = f"<div class='flash {'err' if is_error else ''}'>{html.escape(flash_text)}</div>" if flash_text else ""
@@ -457,6 +555,17 @@ def create_handler(service: PlannerService):
                 self._send_html(render_technical(service))
                 return
 
+            if parsed.path.startswith("/plans/") and parsed.path.endswith("/export"):
+                plan_id = int(parsed.path.split("/")[2])
+                csv_data = service.export_plan_csv(plan_id).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/csv; charset=utf-8")
+                self.send_header("Content-Disposition", f"attachment; filename=plan_{plan_id}.csv")
+                self.send_header("Content-Length", str(len(csv_data)))
+                self.end_headers()
+                self.wfile.write(csv_data)
+                return
+
             self._send_html(layout("404", "<section class='card'><h2>Страница не найдена</h2></section>"), status=404)
 
         def do_POST(self):
@@ -465,7 +574,7 @@ def create_handler(service: PlannerService):
                     form = self._read_form()
                     ship = form.get("ship", [""])[0]
                     start_date = form.get("start_date", [""])[0]
-                    route = [r.strip() for r in form.get("route", [""])[0].split(",") if r.strip()]
+                    route = [r.strip() for r in form.get("route", [""])[0].split("||") if r.strip()]
                     plan = service.create_plan(ship=ship, route=route, start_date=start_date)
                     self._redirect(f"/?plan_id={plan['id']}")
                     return
@@ -481,8 +590,11 @@ def create_handler(service: PlannerService):
                         if arr_key in form and dep_key in form:
                             arr = form[arr_key][0]
                             dep = form[dep_key][0]
-                            service._parse_date(arr)
-                            service._parse_date(dep)
+                            if (arr and not dep) or (dep and not arr):
+                                raise ValueError("Заполните обе даты для захода либо очистите обе, чтобы пропустить порт")
+                            if arr and dep:
+                                service._parse_date(arr)
+                                service._parse_date(dep)
                             manual_map[idx] = (arr, dep)
                     service.update_plan_from_manual_table(plan_id, manual_map)
                     self._send_html(render_index(service, plan_id, "Расписание обновлено с учетом ручных правок"))

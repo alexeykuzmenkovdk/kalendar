@@ -50,6 +50,35 @@ class PlannerServiceTests(unittest.TestCase):
         self.assertIn("Приход", page)
         self.assertIn("Отход", page)
         self.assertIn("Обновить расписание", page)
+        self.assertIn("Экспорт CSV", page)
+
+
+    def test_manual_table_allows_skipped_port(self):
+        plan = self.service.create_plan(
+            ship="т/х «Анатолий Иванов»",
+            route=["Владивосток", "Славянка", "Невельск"],
+            start_date="2026-04-01",
+        )
+
+        self.service.update_plan_from_manual_table(
+            plan["id"],
+            {1: ("", "")},
+        )
+
+        updated = self.service.get_plan(plan["id"])
+        self.assertTrue(updated["stops"][1]["skipped"])
+        self.assertEqual(updated["stops"][1]["arrival"], "")
+        self.assertEqual(updated["stops"][1]["departure"], "")
+
+    def test_export_plan_csv_contains_header(self):
+        plan = self.service.create_plan(
+            ship="т/х «Ерофей Хабаров»",
+            route=["Владивосток", "Славянка"],
+            start_date="2026-05-01",
+        )
+        csv_text = self.service.export_plan_csv(plan["id"])
+
+        self.assertIn("plan_id,ship,port,arrival,departure,skipped", csv_text)
 
     def test_technical_page_contains_matrix_and_stay(self):
         page = render_technical(self.service)
