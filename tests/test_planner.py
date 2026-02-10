@@ -110,8 +110,29 @@ class PlannerServiceTests(unittest.TestCase):
         html_text = self.service.export_plan_html(plan["id"])
 
         self.assertIn("<table>", html_text)
-        self.assertIn("<th>Пропуск</th>", html_text)
+        self.assertIn("<th colspan='2'>Владивосток</th>", html_text)
+        self.assertIn("<th>Приход</th><th>Отход</th>", html_text)
         self.assertIn("т/х «Ерофей Хабаров»", html_text)
+
+    def test_delete_plan_removes_it_from_storage(self):
+        first = self.service.create_plan(
+            ship="т/х «Ерофей Хабаров»",
+            route=["Владивосток", "Славянка"],
+            start_date="2026-05-01",
+        )
+        second = self.service.create_plan(
+            ship="т/х «Русский Восток»",
+            route=["Владивосток", "Невельск"],
+            start_date="2026-06-01",
+        )
+
+        self.service.delete_plan(first["id"])
+
+        plans = self.service.list_plans()
+        self.assertEqual(len(plans), 1)
+        self.assertEqual(plans[0]["id"], second["id"])
+        with self.assertRaises(ValueError):
+            self.service.get_plan(first["id"])
 
     def test_technical_page_contains_matrix_and_stay(self):
         page = render_technical(self.service)

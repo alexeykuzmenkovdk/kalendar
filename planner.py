@@ -169,6 +169,15 @@ class PlannerService:
                 return plan
         raise ValueError(f"План #{plan_id} не найден")
 
+    def delete_plan(self, plan_id: int) -> None:
+        plans = self.db.data["plans"]
+        for idx, plan in enumerate(plans):
+            if plan["id"] == plan_id:
+                del plans[idx]
+                self.db.save()
+                return
+        raise ValueError(f"План #{plan_id} не найден")
+
     def _apply_shift(self, plan: Dict, start_index: int, shift_days: int) -> None:
         for idx in range(start_index, len(plan["stops"])):
             old_arrival = self._parse_date(plan["stops"][idx]["arrival"])
@@ -294,22 +303,26 @@ class PlannerService:
         return buffer.getvalue()
 
     def export_plan_html(self, plan_id: int) -> str:
-        plan = self.get_plan(plan_id)
+        table = self.build_schedule_table(plan_id)
+        plan = table["plan"]
+        header_ports = "".join(f"<th colspan='2'>{html.escape(port)}</th>" for port in table["ports"])
+        sub_headers = "".join("<th>Приход</th><th>Отход</th>" for _ in table["ports"])
+
         rows = []
-        for stop in plan["stops"]:
-            arrival = stop.get("arrival", "")
-            departure = stop.get("departure", "")
-            skipped = "Да" if stop.get("skipped") else "Нет"
-            rows.append(
-                "<tr>"
-                f"<td>{plan['id']}</td>"
-                f"<td>{html.escape(plan['ship'])}</td>"
-                f"<td>{html.escape(stop['port'])}</td>"
-                f"<td>{html.escape(arrival)}</td>"
-                f"<td>{html.escape(departure)}</td>"
-                f"<td>{skipped}</td>"
-                "</tr>"
-            )
+        for row in table["rows"]:
+            cells = []
+            for port in table["ports"]:
+                cell = row[port]
+                arrival = cell["arrival"]
+                departure = cell["departure"]
+                if arrival == table["placeholder"] and departure == table["placeholder"]:
+                    cells.append(
+                        f"<td><span class='placeholder'>{html.escape(table['placeholder'])}</span></td>"
+                        f"<td><span class='placeholder'>{html.escape(table['placeholder'])}</span></td>"
+                    )
+                else:
+                    cells.append(f"<td>{html.escape(arrival)}</td><td>{html.escape(departure)}</td>")
+            rows.append(f"<tr>{''.join(cells)}</tr>")
 
         return """<!doctype html>
 <html lang='ru'>
@@ -321,8 +334,9 @@ body { font-family: Arial, sans-serif; }
 h1 { margin-bottom: 6px; }
 p { margin-top: 0; color: #333; }
 table { border-collapse: collapse; width: 100%; }
-th, td { border: 1px solid #333; padding: 6px; text-align: left; }
+th, td { border: 1px solid #333; padding: 6px; text-align: center; }
 th { background: #f3f4f6; }
+.placeholder { color: #687082; font-weight: bold; }
 </style>
 </head>
 <body>
@@ -330,9 +344,7 @@ th { background: #f3f4f6; }
             f"<h1>{html.escape(plan['ship'])}</h1>"
             f"<p>Период: {plan['start_date']} — {plan['end_date']}</p>"
             "<table>"
-            "<thead><tr>"
-            "<th>ID плана</th><th>Судно</th><th>Порт</th><th>Приход</th><th>Отход</th><th>Пропуск</th>"
-            "</tr></thead>"
+            f"<thead><tr>{header_ports}</tr><tr>{sub_headers}</tr></thead>"
             f"<tbody>{''.join(rows)}</tbody>"
             "</table>"
             "</body></html>"
@@ -493,6 +505,10 @@ def render_index(service: PlannerService, selected_id: Optional[int], flash_text
 <label style='min-width:420px;flex:1;'>План<select name='plan_id'>{plans_options}</select></label>
 <button type='submit'>Открыть</button>
 </form>
+<form class='row' method='post' action='/plans/delete' onsubmit="return confirm('Удалить выбранный план?');">
+<label style='min-width:420px;flex:1;'>План<select name='plan_id'>{plans_options}</select></label>
+<button type='submit'>Удалить план</button>
+</form>
 </section>
 {table_html}
 <script>
@@ -637,6 +653,21 @@ def create_handler(service: PlannerService):
                     route = [r.strip() for r in form.get("route", [""])[0].split("||") if r.strip()]
                     plan = service.create_plan(ship=ship, route=route, start_date=start_date)
                     self._redirect(f"/?plan_id={plan['id']}")
+                    return
+
+                if self.path == "/plans/delete":
+                    form = self._read_form()
+                    plan_id_raw = form.get("plan_id", [""])[0]
+                    if not plan_id_raw:
+                        raise ValueError("Выберите план для удаления")
+
+                    plan_id = int(plan_id_raw)
+                    service.delete_plan(plan_id)
+                    remaining = service.list_plans()
+                    redirect_path = "/"
+                    if remaining:
+                        redirect_path += "?" + urlencode({"plan_id": remaining[-1]["id"]})
+                    self._redirect(redirect_path)
                     return
 
                 if self.path.startswith("/plans/") and self.path.endswith("/update"):
