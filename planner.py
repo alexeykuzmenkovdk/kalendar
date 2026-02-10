@@ -224,6 +224,8 @@ class PlannerService:
                 continue
 
             arrival, departure = manual_map[idx]
+            old_arrival = stop.get("arrival", "")
+            old_departure = stop.get("departure", "")
             if not arrival and not departure:
                 stop["arrival"] = ""
                 stop["departure"] = ""
@@ -241,7 +243,8 @@ class PlannerService:
             stop["arrival"] = arrival
             stop["departure"] = departure
             stop["skipped"] = False
-            locked_indices.add(idx)
+            if arrival != old_arrival or departure != old_departure:
+                locked_indices.add(idx)
 
         start_departure = self._parse_date(plan["start_date"])
         prev_port = None

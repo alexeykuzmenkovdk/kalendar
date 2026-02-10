@@ -40,6 +40,26 @@ class PlannerServiceTests(unittest.TestCase):
         self.assertEqual(updated["stops"][1]["arrival"], "2026-02-08")
         self.assertNotEqual(updated["stops"][2]["arrival"], initial_third_arrival)
 
+    def test_full_manual_form_recalculates_unedited_stops(self):
+        plan = self.service.create_plan(
+            ship="т/х «Ерофей Хабаров»",
+            route=["Владивосток", "Славянка", "Невельск"],
+            start_date="2026-02-01",
+        )
+        initial_third_arrival = plan["stops"][2]["arrival"]
+
+        manual_map = {
+            idx: (stop["arrival"], stop["departure"])
+            for idx, stop in enumerate(plan["stops"])
+        }
+        manual_map[0] = (plan["stops"][0]["arrival"], "2026-03-02")
+
+        self.service.update_plan_from_manual_table(plan["id"], manual_map)
+
+        updated = self.service.get_plan(plan["id"])
+        self.assertEqual(updated["stops"][0]["departure"], "2026-03-02")
+        self.assertNotEqual(updated["stops"][2]["arrival"], initial_third_arrival)
+
     def test_html_render_contains_schedule_headers(self):
         plan = self.service.create_plan(
             ship="т/х «Русский Восток»",
