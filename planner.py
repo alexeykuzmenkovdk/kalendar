@@ -290,6 +290,51 @@ class PlannerService:
             )
         return buffer.getvalue()
 
+    def export_plan_html(self, plan_id: int) -> str:
+        plan = self.get_plan(plan_id)
+        rows = []
+        for stop in plan["stops"]:
+            arrival = stop.get("arrival", "")
+            departure = stop.get("departure", "")
+            skipped = "Да" if stop.get("skipped") else "Нет"
+            rows.append(
+                "<tr>"
+                f"<td>{plan['id']}</td>"
+                f"<td>{html.escape(plan['ship'])}</td>"
+                f"<td>{html.escape(stop['port'])}</td>"
+                f"<td>{html.escape(arrival)}</td>"
+                f"<td>{html.escape(departure)}</td>"
+                f"<td>{skipped}</td>"
+                "</tr>"
+            )
+
+        return """<!doctype html>
+<html lang='ru'>
+<head>
+<meta charset='utf-8'>
+<title>Расписание судозаходов</title>
+<style>
+body { font-family: Arial, sans-serif; }
+h1 { margin-bottom: 6px; }
+p { margin-top: 0; color: #333; }
+table { border-collapse: collapse; width: 100%; }
+th, td { border: 1px solid #333; padding: 6px; text-align: left; }
+th { background: #f3f4f6; }
+</style>
+</head>
+<body>
+""" + (
+            f"<h1>{html.escape(plan['ship'])}</h1>"
+            f"<p>Период: {plan['start_date']} — {plan['end_date']}</p>"
+            "<table>"
+            "<thead><tr>"
+            "<th>ID плана</th><th>Судно</th><th>Порт</th><th>Приход</th><th>Отход</th><th>Пропуск</th>"
+            "</tr></thead>"
+            f"<tbody>{''.join(rows)}</tbody>"
+            "</table>"
+            "</body></html>"
+        )
+
     def set_transition(self, from_port: str, to_port: str, days: int) -> None:
         if from_port not in self.db.data["ports"] or to_port not in self.db.data["ports"]:
             raise ValueError("Неизвестный порт")
@@ -417,6 +462,7 @@ def render_index(service: PlannerService, selected_id: Optional[int], flash_text
 <div class='row'>
 <button class='primary' type='submit'>Обновить расписание</button>
 <a href='/plans/{table['plan']['id']}/export' style='text-decoration:none;'><button type='button'>Экспорт CSV</button></a>
+<a href='/plans/{table['plan']['id']}/export-html' style='text-decoration:none;'><button type='button'>Экспорт HTML</button></a>
 </div>
 </form>
 </section>"""
@@ -535,7 +581,7 @@ def create_handler(service: PlannerService):
         def _read_form(self) -> Dict[str, List[str]]:
             length = int(self.headers.get("Content-Length", "0"))
             raw = self.rfile.read(length).decode("utf-8")
-            return parse_qs(raw)
+            return parse_qs(raw, keep_blank_values=True)
 
         def do_GET(self):
             parsed = urlparse(self.path)
@@ -564,6 +610,17 @@ def create_handler(service: PlannerService):
                 self.send_header("Content-Length", str(len(csv_data)))
                 self.end_headers()
                 self.wfile.write(csv_data)
+                return
+
+            if parsed.path.startswith("/plans/") and parsed.path.endswith("/export-html"):
+                plan_id = int(parsed.path.split("/")[2])
+                html_data = service.export_plan_html(plan_id).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Disposition", f"attachment; filename=plan_{plan_id}.html")
+                self.send_header("Content-Length", str(len(html_data)))
+                self.end_headers()
+                self.wfile.write(html_data)
                 return
 
             self._send_html(layout("404", "<section class='card'><h2>Страница не найдена</h2></section>"), status=404)
