@@ -57,6 +57,7 @@ class Plan:
     start_date: str
     end_date: str
     stops: List[Stop]
+    frozen_until: str = ""
 
 
 class PlannerDB:
@@ -157,6 +158,7 @@ class PlannerService:
             start_date=start_date,
             end_date=self._fmt_date(limit),
             stops=stops,
+            frozen_until="",
         )
         result = asdict(plan)
         self.db.data["plans"].append(result)
@@ -226,10 +228,25 @@ class PlannerService:
     def update_plan_from_manual_table(self, plan_id: int, manual_map: Dict[int, Tuple[str, str]]) -> Dict:
         plan = self.get_plan(plan_id)
         locked_indices = set()
+        frozen_until_raw = plan.get("frozen_until", "")
+        frozen_until = self._parse_date(frozen_until_raw) if frozen_until_raw else None
+
+        frozen_indices = set()
+        if frozen_until is not None:
+            for idx, stop in enumerate(plan["stops"]):
+                if stop.get("skipped"):
+                    continue
+                departure = stop.get("departure", "")
+                if not departure:
+                    continue
+                if self._parse_date(departure) <= frozen_until:
+                    frozen_indices.add(idx)
 
         for idx, stop in enumerate(plan["stops"]):
             stop.setdefault("skipped", False)
             if idx not in manual_map:
+                continue
+            if idx in frozen_indices:
                 continue
 
             arrival, departure = manual_map[idx]
@@ -255,11 +272,21 @@ class PlannerService:
             if arrival != old_arrival or departure != old_departure:
                 locked_indices.add(idx)
 
-        start_departure = self._parse_date(plan["start_date"])
-        prev_port = None
-        current_departure = start_departure
+        mutable_start_idx = 0
+        while mutable_start_idx < len(plan["stops"]) and mutable_start_idx in frozen_indices:
+            mutable_start_idx += 1
 
-        for idx, stop in enumerate(plan["stops"]):
+        prev_port = None
+        current_departure = self._parse_date(plan["start_date"])
+        for idx in range(mutable_start_idx):
+            frozen_stop = plan["stops"][idx]
+            if frozen_stop.get("skipped"):
+                continue
+            prev_port = frozen_stop["port"]
+            current_departure = self._parse_date(frozen_stop["departure"])
+
+        for idx in range(mutable_start_idx, len(plan["stops"])):
+            stop = plan["stops"][idx]
             if stop.get("skipped"):
                 continue
 
@@ -283,6 +310,18 @@ class PlannerService:
 
         self.db.save()
         return self.get_plan(plan_id)
+
+    def set_frozen_until(self, plan_id: int, frozen_until: str) -> Dict:
+        plan = self.get_plan(plan_id)
+        if frozen_until:
+            self._parse_date(frozen_until)
+            if self._parse_date(frozen_until) < self._parse_date(plan["start_date"]):
+                raise ValueError("Дата фиксации не может быть раньше даты старта")
+            plan["frozen_until"] = frozen_until
+        else:
+            plan["frozen_until"] = ""
+        self.db.save()
+        return plan
 
     def export_plan_csv(self, plan_id: int) -> str:
         plan = self.get_plan(plan_id)
@@ -464,10 +503,23 @@ def render_index(service: PlannerService, selected_id: Optional[int], flash_text
                     cells.append(f"<td><span class='placeholder'>{table['placeholder']}</span></td><td><span class='placeholder'>{table['placeholder']}</span></td>")
             rows_html.append(f"<tr>{''.join(cells)}</tr>")
 
+        frozen_until = table["plan"].get("frozen_until", "")
+        freeze_note = (
+            f"Заходы с датой отхода по {frozen_until} фиксированы и не изменяются при обновлении."
+            if frozen_until
+            else ""
+        )
+
         table_html = f"""
 <section class='card'>
 <h2>{html.escape(table['plan']['ship'])} ({table['plan']['start_date']} — {table['plan']['end_date']})</h2>
 <form method='post' action='/plans/{table['plan']['id']}/update'>
+<div class='row'>
+<label>Фиксировать период до даты (включительно)
+<input type='date' name='frozen_until' value='{frozen_until}'>
+</label>
+</div>
+{f"<p style='margin:8px 0 0;color:#1f4d8f;font-size:13px;'>{html.escape(freeze_note)}</p>" if freeze_note else ""}
 <div class='table-wrap'>
 <table>
 <thead><tr>{header_ports}</tr><tr>{sub_headers}</tr></thead>
@@ -673,6 +725,9 @@ def create_handler(service: PlannerService):
                 if self.path.startswith("/plans/") and self.path.endswith("/update"):
                     form = self._read_form()
                     plan_id = int(self.path.split("/")[2])
+                    plan = service.get_plan(plan_id)
+                    frozen_until = form.get("frozen_until", [""])[0]
+                    service.set_frozen_until(plan_id, frozen_until)
                     plan = service.get_plan(plan_id)
                     manual_map = {}
                     for idx in range(len(plan["stops"])):
