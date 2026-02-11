@@ -276,9 +276,12 @@ class PlannerService:
             old_arrival = stop.get("arrival", "")
             old_departure = stop.get("departure", "")
             if not arrival and not departure:
-                stop["arrival"] = ""
-                stop["departure"] = ""
-                stop["skipped"] = True
+                if old_arrival or old_departure:
+                    stop["arrival"] = ""
+                    stop["departure"] = ""
+                    stop["skipped"] = True
+                else:
+                    stop["skipped"] = False
                 continue
 
             if not arrival or not departure:
