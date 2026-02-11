@@ -201,6 +201,47 @@ class PlannerServiceTests(unittest.TestCase):
         self.assertEqual(updated["stops"][3]["arrival"], "2026-01-10")
         self.assertEqual(updated["stops"][3]["departure"], "2026-01-11")
 
+    def test_frozen_period_preserves_manual_empty_cells(self):
+        plan = self.service.create_plan(
+            ship="т/х «Ерофей Хабаров»",
+            route=["Владивосток", "Славянка", "Невельск"],
+            start_date="2025-12-21",
+        )
+
+        self.service.set_frozen_rows(plan["id"], [0])
+        manual_map = {
+            idx: (stop["arrival"], stop["departure"])
+            for idx, stop in enumerate(plan["stops"])
+        }
+        manual_map[0] = ("2025-12-21", "2025-12-22")
+        manual_map[1] = ("", "")
+        manual_map[2] = ("2025-12-31", "2026-01-01")
+
+        self.service.update_plan_from_manual_table(plan["id"], manual_map)
+
+        updated = self.service.get_plan(plan["id"])
+        self.assertEqual(updated["stops"][1]["arrival"], "")
+        self.assertEqual(updated["stops"][1]["departure"], "")
+        self.assertTrue(updated["stops"][1]["skipped"])
+        self.assertEqual(updated["stops"][3]["arrival"], "2026-01-03")
+        self.assertEqual(updated["stops"][3]["departure"], "2026-01-04")
+
+    def test_frozen_rows_are_readonly_even_with_empty_cells(self):
+        plan = self.service.create_plan(
+            ship="т/х «Ерофей Хабаров»",
+            route=["Владивосток", "Славянка"],
+            start_date="2026-02-01",
+        )
+        self.service.set_frozen_rows(plan["id"], [0])
+        mutable_plan = self.service.get_plan(plan["id"])
+        mutable_plan["stops"][0]["arrival"] = ""
+        mutable_plan["stops"][0]["departure"] = ""
+        self.service.db.save()
+
+        page = render_index(self.service, selected_id=plan["id"])
+
+        self.assertIn("name='stop_0_arrival' value='' readonly", page)
+
     def test_clear_plan_schedule_resets_all_cells(self):
         plan = self.service.create_plan(
             ship="т/х «Русский Восток»",
