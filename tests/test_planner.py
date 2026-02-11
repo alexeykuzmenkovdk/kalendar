@@ -22,6 +22,7 @@ class PlannerServiceTests(unittest.TestCase):
         )
         self.assertGreater(len(plan["stops"]), 2)
         self.assertEqual(plan["stops"][0]["arrival"], "2026-01-01")
+        self.assertEqual(plan["end_date"], "2027-01-01")
 
     def test_update_schedule_from_manual_table_shifts_following(self):
         plan = self.service.create_plan(
@@ -70,9 +71,9 @@ class PlannerServiceTests(unittest.TestCase):
         self.assertIn("Приход", page)
         self.assertIn("Отход", page)
         self.assertIn("Обновить расписание", page)
+        self.assertIn("Очистить расписание", page)
         self.assertIn("Экспорт CSV", page)
         self.assertIn("Экспорт HTML", page)
-
 
     def test_manual_table_allows_skipped_port(self):
         plan = self.service.create_plan(
@@ -90,7 +91,6 @@ class PlannerServiceTests(unittest.TestCase):
         self.assertTrue(updated["stops"][1]["skipped"])
         self.assertEqual(updated["stops"][1]["arrival"], "")
         self.assertEqual(updated["stops"][1]["departure"], "")
-
 
     def test_frozen_period_keeps_initial_segment_unchanged(self):
         plan = self.service.create_plan(
@@ -115,6 +115,48 @@ class PlannerServiceTests(unittest.TestCase):
         self.assertEqual(updated["stops"][1]["departure"], frozen_departure)
         self.assertEqual(updated["stops"][3]["arrival"], "2026-03-15")
         self.assertEqual(updated["frozen_until"], frozen_departure)
+
+    def test_frozen_stops_remain_unchanged_even_if_not_prefix(self):
+        plan = self.service.create_plan(
+            ship="т/х «Ерофей Хабаров»",
+            route=["Владивосток", "Славянка", "Невельск"],
+            start_date="2026-02-01",
+        )
+        self.service.update_plan_from_manual_table(
+            plan["id"],
+            {
+                0: ("2026-03-10", "2026-03-11"),
+            },
+        )
+        changed_plan = self.service.get_plan(plan["id"])
+        frozen_arrival = changed_plan["stops"][1]["arrival"]
+        frozen_departure = changed_plan["stops"][1]["departure"]
+
+        self.service.set_frozen_until(plan["id"], frozen_departure)
+        self.service.update_plan_from_manual_table(
+            plan["id"],
+            {
+                4: ("2026-04-10", "2026-04-11"),
+            },
+        )
+
+        updated = self.service.get_plan(plan["id"])
+        self.assertEqual(updated["stops"][1]["arrival"], frozen_arrival)
+        self.assertEqual(updated["stops"][1]["departure"], frozen_departure)
+
+    def test_clear_plan_schedule_resets_all_cells(self):
+        plan = self.service.create_plan(
+            ship="т/х «Русский Восток»",
+            route=["Владивосток", "Невельск"],
+            start_date="2026-06-01",
+        )
+        self.service.set_frozen_until(plan["id"], plan["stops"][0]["departure"])
+        self.service.clear_plan_schedule(plan["id"])
+
+        updated = self.service.get_plan(plan["id"])
+        self.assertEqual(updated["frozen_until"], "")
+        self.assertTrue(all(stop["skipped"] for stop in updated["stops"]))
+        self.assertTrue(all(stop["arrival"] == "" and stop["departure"] == "" for stop in updated["stops"]))
 
     def test_export_plan_csv_contains_header(self):
         plan = self.service.create_plan(
