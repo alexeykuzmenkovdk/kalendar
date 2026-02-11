@@ -147,6 +147,35 @@ class PlannerServiceTests(unittest.TestCase):
         self.assertEqual(updated["stops"][1]["arrival"], frozen_arrival)
         self.assertEqual(updated["stops"][1]["departure"], frozen_departure)
 
+    def test_manual_then_freeze_workflow_keeps_manual_dates_in_frozen_period(self):
+        plan = self.service.create_plan(
+            ship="т/х «Ерофей Хабаров»",
+            route=["Владивосток", "Славянка", "Невельск"],
+            start_date="2026-02-01",
+        )
+
+        self.service.update_plan_from_manual_table(
+            plan["id"],
+            {
+                1: ("2026-03-05", "2026-03-06"),
+                2: ("2026-03-08", "2026-03-09"),
+            },
+        )
+        self.service.set_frozen_range(plan["id"], "2026-03-05", "2026-03-09")
+
+        self.service.update_plan_from_manual_table(
+            plan["id"],
+            {
+                0: ("2026-03-01", "2026-03-02"),
+            },
+        )
+
+        updated = self.service.get_plan(plan["id"])
+        self.assertEqual(updated["stops"][1]["arrival"], "2026-03-05")
+        self.assertEqual(updated["stops"][1]["departure"], "2026-03-06")
+        self.assertEqual(updated["stops"][2]["arrival"], "2026-03-08")
+        self.assertEqual(updated["stops"][2]["departure"], "2026-03-09")
+
     def test_empty_rows_in_full_form_do_not_block_autofill_after_frozen_range(self):
         plan = self.service.create_plan(
             ship="т/х «Ерофей Хабаров»",
