@@ -781,10 +781,6 @@ def create_handler(service: PlannerService):
                     form = self._read_form()
                     plan_id = int(self.path.split("/")[2])
                     plan = service.get_plan(plan_id)
-                    frozen_from = form.get("frozen_from", [""])[0]
-                    frozen_to = form.get("frozen_to", [""])[0]
-                    service.set_frozen_range(plan_id, frozen_from, frozen_to)
-                    plan = service.get_plan(plan_id)
                     manual_map = {}
                     for idx in range(len(plan["stops"])):
                         arr_key = f"stop_{idx}_arrival"
@@ -799,6 +795,10 @@ def create_handler(service: PlannerService):
                                 service._parse_date(dep)
                             manual_map[idx] = (arr, dep)
                     service.update_plan_from_manual_table(plan_id, manual_map)
+
+                    frozen_from = form.get("frozen_from", [""])[0]
+                    frozen_to = form.get("frozen_to", [""])[0]
+                    service.set_frozen_range(plan_id, frozen_from, frozen_to)
                     self._send_html(render_index(service, plan_id, "Расписание обновлено с учетом ручных правок"))
                     return
 
