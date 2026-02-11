@@ -74,6 +74,8 @@ class PlannerServiceTests(unittest.TestCase):
         self.assertIn("Очистить даты в расписании", page)
         self.assertIn("Экспорт CSV", page)
         self.assertIn("Экспорт HTML", page)
+        self.assertIn("Добавить поля", page)
+        self.assertIn("name='additional_rows'", page)
         self.assertIn("Заморозка", page)
         self.assertIn("name='freeze_row_0'", page)
         self.assertIn("<th rowspan='2'>Заморозка</th>", page)
@@ -270,6 +272,21 @@ class PlannerServiceTests(unittest.TestCase):
         updated = self.service.get_plan(plan["id"])
         self.assertEqual(updated["frozen_rows"], [0])
 
+
+    def test_extend_plan_adds_more_rows(self):
+        plan = self.service.create_plan(
+            ship="т/х «Русский Восток»",
+            route=["Владивосток", "Невельск"],
+            start_date="2026-06-01",
+        )
+        initial_stops = len(plan["stops"])
+
+        self.service.extend_plan(plan["id"], 2)
+
+        updated = self.service.get_plan(plan["id"])
+        self.assertEqual(len(updated["stops"]), initial_stops + 4)
+        self.assertEqual(updated["end_date"], updated["stops"][-1]["departure"])
+
     def test_export_plan_csv_contains_header(self):
         plan = self.service.create_plan(
             ship="т/х «Ерофей Хабаров»",
@@ -292,6 +309,7 @@ class PlannerServiceTests(unittest.TestCase):
         self.assertIn("<th colspan='2'>Владивосток</th>", html_text)
         self.assertIn("<th>Приход</th><th>Отход</th>", html_text)
         self.assertIn("т/х «Ерофей Хабаров»", html_text)
+        self.assertIn("01.05.2026", html_text)
 
     def test_delete_plan_removes_it_from_storage(self):
         first = self.service.create_plan(
