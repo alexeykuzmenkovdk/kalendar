@@ -147,6 +147,31 @@ class PlannerServiceTests(unittest.TestCase):
         self.assertEqual(updated["stops"][1]["arrival"], frozen_arrival)
         self.assertEqual(updated["stops"][1]["departure"], frozen_departure)
 
+    def test_empty_rows_in_full_form_do_not_block_autofill_after_frozen_range(self):
+        plan = self.service.create_plan(
+            ship="т/х «Ерофей Хабаров»",
+            route=["Владивосток", "Славянка", "Невельск"],
+            start_date="2026-01-01",
+        )
+        self.service.set_frozen_range(plan["id"], "2026-01-01", "2026-01-04")
+
+        mutable_plan = self.service.get_plan(plan["id"])
+        for idx in range(3, len(mutable_plan["stops"])):
+            mutable_plan["stops"][idx]["arrival"] = ""
+            mutable_plan["stops"][idx]["departure"] = ""
+            mutable_plan["stops"][idx]["skipped"] = False
+        self.service.db.save()
+
+        manual_map = {idx: ("", "") for idx in range(len(plan["stops"]))}
+        manual_map[2] = ("2026-01-07", "2026-01-08")
+
+        self.service.update_plan_from_manual_table(plan["id"], manual_map)
+
+        updated = self.service.get_plan(plan["id"])
+        self.assertFalse(updated["stops"][3]["skipped"])
+        self.assertEqual(updated["stops"][3]["arrival"], "2026-01-10")
+        self.assertEqual(updated["stops"][3]["departure"], "2026-01-11")
+
     def test_clear_plan_schedule_resets_all_cells(self):
         plan = self.service.create_plan(
             ship="т/х «Русский Восток»",
