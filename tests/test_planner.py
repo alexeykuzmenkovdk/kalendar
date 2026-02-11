@@ -216,6 +216,19 @@ class PlannerServiceTests(unittest.TestCase):
         self.assertTrue(all(not stop["skipped"] for stop in updated["stops"]))
         self.assertTrue(all(stop["arrival"] == "" and stop["departure"] == "" for stop in updated["stops"]))
 
+    def test_set_frozen_rows_allows_empty_periods(self):
+        plan = self.service.create_plan(
+            ship="т/х «Русский Восток»",
+            route=["Владивосток", "Невельск"],
+            start_date="2026-06-01",
+        )
+        self.service.clear_plan_schedule(plan["id"])
+
+        self.service.set_frozen_rows(plan["id"], [0])
+
+        updated = self.service.get_plan(plan["id"])
+        self.assertEqual(updated["frozen_rows"], [0])
+
     def test_export_plan_csv_contains_header(self):
         plan = self.service.create_plan(
             ship="т/х «Ерофей Хабаров»",
