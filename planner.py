@@ -16,6 +16,7 @@ from typing import Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlencode, urlparse
 
 DATE_FMT = "%Y-%m-%d"
+DISPLAY_DATE_FMT = "%d.%m.%Y"
 DEFAULT_DB = Path("planner_db.json")
 PLAN_HORIZON_DAYS = 365
 PLACEHOLDER = "¤"
@@ -101,6 +102,12 @@ class PlannerService:
     @staticmethod
     def _fmt_date(value: datetime) -> str:
         return value.strftime(DATE_FMT)
+
+    @staticmethod
+    def _fmt_date_for_display(value: str) -> str:
+        if not value:
+            return value
+        return datetime.strptime(value, DATE_FMT).strftime(DISPLAY_DATE_FMT)
 
     def list_ships(self) -> List[str]:
         return self.db.data["ships"]
@@ -339,6 +346,56 @@ class PlannerService:
         self.db.save()
         return plan
 
+    def extend_plan(self, plan_id: int, additional_rows: int) -> Dict:
+        if additional_rows <= 0:
+            raise ValueError("Количество добавляемых периодов должно быть больше нуля")
+
+        plan = self.get_plan(plan_id)
+        route = plan["route"]
+        new_stops_count = additional_rows * len(route)
+
+        last_with_dates = next(
+            (
+                stop
+                for stop in reversed(plan["stops"])
+                if stop.get("arrival") and stop.get("departure") and not stop.get("skipped")
+            ),
+            None,
+        )
+
+        if last_with_dates:
+            current_departure = self._parse_date(last_with_dates["departure"])
+            prev_port = last_with_dates["port"]
+        else:
+            current_departure = self._parse_date(plan["start_date"])
+            prev_port = None
+
+        start_idx = len(plan["stops"])
+        for offset in range(new_stops_count):
+            port = route[(start_idx + offset) % len(route)]
+            if prev_port is None:
+                arrival = current_departure
+            else:
+                travel_days = self.db.data["transition_days"][prev_port][port]
+                arrival = current_departure + timedelta(days=travel_days)
+
+            stay_days = self.db.data["stay_days"].get(port, 1)
+            departure = arrival + timedelta(days=stay_days)
+            plan["stops"].append(
+                {
+                    "port": port,
+                    "arrival": self._fmt_date(arrival),
+                    "departure": self._fmt_date(departure),
+                    "skipped": False,
+                }
+            )
+            current_departure = departure
+            prev_port = port
+
+        plan["end_date"] = self._fmt_date(current_departure)
+        self.db.save()
+        return plan
+
     def export_plan_csv(self, plan_id: int) -> str:
         plan = self.get_plan(plan_id)
         buffer = io.StringIO()
@@ -376,7 +433,10 @@ class PlannerService:
                         f"<td><span class='placeholder'>{html.escape(table['placeholder'])}</span></td>"
                     )
                 else:
-                    cells.append(f"<td>{html.escape(arrival)}</td><td>{html.escape(departure)}</td>")
+                    cells.append(
+                        f"<td>{html.escape(self._fmt_date_for_display(arrival))}</td>"
+                        f"<td>{html.escape(self._fmt_date_for_display(departure))}</td>"
+                    )
             rows.append(f"<tr>{''.join(cells)}</tr>")
 
         return """<!doctype html>
@@ -397,7 +457,7 @@ th { background: #f3f4f6; }
 <body>
 """ + (
             f"<h1>{html.escape(plan['ship'])}</h1>"
-            f"<p>Период: {plan['start_date']} — {plan['end_date']}</p>"
+            f"<p>Период: {self._fmt_date_for_display(plan['start_date'])} — {self._fmt_date_for_display(plan['end_date'])}</p>"
             "<table>"
             f"<thead><tr>{header_ports}</tr><tr>{sub_headers}</tr></thead>"
             f"<tbody>{''.join(rows)}</tbody>"
@@ -553,6 +613,10 @@ def render_index(service: PlannerService, selected_id: Optional[int], flash_text
 <div class='row'>
 <button class='primary' type='submit'>Обновить расписание</button>
 <button type='submit' formaction='/plans/{table['plan']['id']}/clear' formmethod='post' onclick="return confirm('Очистить только даты в таблице выбранного плана?');">Очистить даты в расписании</button>
+<label>Добавить периодов
+<input type='number' name='additional_rows' min='1' value='1' style='max-width:110px;'>
+</label>
+<button type='submit' formaction='/plans/{table['plan']['id']}/extend' formmethod='post'>Добавить поля</button>
 <a href='/plans/{table['plan']['id']}/export' style='text-decoration:none;'><button type='button'>Экспорт CSV</button></a>
 <a href='/plans/{table['plan']['id']}/export-html' style='text-decoration:none;'><button type='button'>Экспорт HTML</button></a>
 </div>
@@ -779,6 +843,14 @@ def create_handler(service: PlannerService):
                     plan_id = int(self.path.split("/")[2])
                     service.clear_plan_schedule(plan_id)
                     self._send_html(render_index(service, plan_id, "Расписание очищено"))
+                    return
+
+                if self.path.startswith("/plans/") and self.path.endswith("/extend"):
+                    form = self._read_form()
+                    plan_id = int(self.path.split("/")[2])
+                    additional_rows = int(form.get("additional_rows", ["1"])[0])
+                    service.extend_plan(plan_id, additional_rows)
+                    self._send_html(render_index(service, plan_id, f"Добавлено периодов: {additional_rows}"))
                     return
 
                 if self.path == "/technical/save":
