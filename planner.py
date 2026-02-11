@@ -250,16 +250,12 @@ class PlannerService:
             row_idx = idx // route_len
             if row_idx not in frozen_rows:
                 continue
-            if (stop.get("arrival") and stop.get("departure")) or stop.get("skipped"):
-                frozen_indices.add(idx)
+            frozen_indices.add(idx)
 
         for idx, stop in enumerate(plan["stops"]):
             stop.setdefault("skipped", False)
             if idx not in manual_map:
                 continue
-            if idx in frozen_indices:
-                continue
-
             arrival, departure = manual_map[idx]
             old_arrival = stop.get("arrival", "")
             old_departure = stop.get("departure", "")
@@ -295,6 +291,10 @@ class PlannerService:
                 continue
 
             if idx in frozen_indices:
+                if stop.get("skipped"):
+                    continue
+                if not stop.get("arrival") or not stop.get("departure"):
+                    continue
                 prev_port = stop["port"]
                 current_departure = self._parse_date(stop["departure"])
                 continue
@@ -508,8 +508,8 @@ def render_index(service: PlannerService, selected_id: Optional[int], flash_text
         frozen_rows = set(table["plan"].get("frozen_rows", []))
         frozen_indices = {
             idx
-            for idx, stop in enumerate(table["plan"]["stops"])
-            if idx // route_len in frozen_rows and stop.get("arrival") and stop.get("departure")
+            for idx, _stop in enumerate(table["plan"]["stops"])
+            if idx // route_len in frozen_rows
         }
 
         rows_html = []
