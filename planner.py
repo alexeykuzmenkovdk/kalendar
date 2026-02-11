@@ -333,13 +333,6 @@ class PlannerService:
         for row in sorted(set(frozen_rows)):
             if row < 0 or row > max_row:
                 raise ValueError("Некорректный индекс периода заморозки")
-            row_has_data = any(
-                (stop.get("arrival") and stop.get("departure")) or stop.get("skipped")
-                for idx, stop in enumerate(plan["stops"])
-                if idx // route_len == row
-            )
-            if not row_has_data:
-                raise ValueError("Нельзя заморозить пустой период")
             normalized_rows.append(row)
 
         plan["frozen_rows"] = normalized_rows
