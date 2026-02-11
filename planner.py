@@ -57,7 +57,8 @@ class Plan:
     start_date: str
     end_date: str
     stops: List[Stop]
-    frozen_until: str = ""
+    frozen_from: str = ""
+    frozen_to: str = ""
 
 
 class PlannerDB:
@@ -158,7 +159,8 @@ class PlannerService:
             start_date=start_date,
             end_date=self._fmt_date(limit),
             stops=stops,
-            frozen_until="",
+            frozen_from="",
+            frozen_to="",
         )
         result = asdict(plan)
         self.db.data["plans"].append(result)
@@ -168,6 +170,11 @@ class PlannerService:
     def get_plan(self, plan_id: int) -> Dict:
         for plan in self.db.data["plans"]:
             if plan["id"] == plan_id:
+                if "frozen_from" not in plan:
+                    plan["frozen_from"] = ""
+                if "frozen_to" not in plan:
+                    legacy = plan.pop("frozen_until", "")
+                    plan["frozen_to"] = legacy
                 return plan
         raise ValueError(f"План #{plan_id} не найден")
 
@@ -185,8 +192,9 @@ class PlannerService:
         for stop in plan["stops"]:
             stop["arrival"] = ""
             stop["departure"] = ""
-            stop["skipped"] = True
-        plan["frozen_until"] = ""
+            stop["skipped"] = False
+        plan["frozen_from"] = ""
+        plan["frozen_to"] = ""
         self.db.save()
         return plan
 
@@ -238,18 +246,23 @@ class PlannerService:
     def update_plan_from_manual_table(self, plan_id: int, manual_map: Dict[int, Tuple[str, str]]) -> Dict:
         plan = self.get_plan(plan_id)
         locked_indices = set()
-        frozen_until_raw = plan.get("frozen_until", "")
-        frozen_until = self._parse_date(frozen_until_raw) if frozen_until_raw else None
+        frozen_from_raw = plan.get("frozen_from", "")
+        frozen_to_raw = plan.get("frozen_to", "")
+        frozen_from = self._parse_date(frozen_from_raw) if frozen_from_raw else None
+        frozen_to = self._parse_date(frozen_to_raw) if frozen_to_raw else None
 
         frozen_indices = set()
-        if frozen_until is not None:
+        if frozen_from is not None and frozen_to is not None:
             for idx, stop in enumerate(plan["stops"]):
                 if stop.get("skipped"):
                     continue
+                arrival = stop.get("arrival", "")
                 departure = stop.get("departure", "")
-                if not departure:
+                if not arrival or not departure:
                     continue
-                if self._parse_date(departure) <= frozen_until:
+                stop_start = self._parse_date(arrival)
+                stop_end = self._parse_date(departure)
+                if not (stop_end < frozen_from or stop_start > frozen_to):
                     frozen_indices.add(idx)
 
         for idx, stop in enumerate(plan["stops"]):
@@ -316,15 +329,27 @@ class PlannerService:
         self.db.save()
         return self.get_plan(plan_id)
 
-    def set_frozen_until(self, plan_id: int, frozen_until: str) -> Dict:
+    def set_frozen_range(self, plan_id: int, frozen_from: str, frozen_to: str) -> Dict:
         plan = self.get_plan(plan_id)
-        if frozen_until:
-            self._parse_date(frozen_until)
-            if self._parse_date(frozen_until) < self._parse_date(plan["start_date"]):
-                raise ValueError("Дата фиксации не может быть раньше даты старта")
-            plan["frozen_until"] = frozen_until
-        else:
-            plan["frozen_until"] = ""
+        if not frozen_from and not frozen_to:
+            plan["frozen_from"] = ""
+            plan["frozen_to"] = ""
+            self.db.save()
+            return plan
+
+        if not frozen_from or not frozen_to:
+            raise ValueError("Укажите обе даты периода заморозки или очистите обе")
+
+        start_date = self._parse_date(plan["start_date"])
+        frozen_from_dt = self._parse_date(frozen_from)
+        frozen_to_dt = self._parse_date(frozen_to)
+        if frozen_to_dt < frozen_from_dt:
+            raise ValueError("Дата конца периода заморозки не может быть раньше даты начала")
+        if frozen_from_dt < start_date:
+            raise ValueError("Период заморозки не может начинаться раньше даты старта")
+
+        plan["frozen_from"] = frozen_from
+        plan["frozen_to"] = frozen_to
         self.db.save()
         return plan
 
@@ -492,26 +517,44 @@ def render_index(service: PlannerService, selected_id: Optional[int], flash_text
         header_ports = "".join(f"<th colspan='2'>{html.escape(port)}</th>" for port in table["ports"])
         sub_headers = "".join("<th>Приход</th><th>Отход</th>" for _ in table["ports"])
 
+        frozen_from = table["plan"].get("frozen_from", "")
+        frozen_to = table["plan"].get("frozen_to", "")
+        frozen_indices = set()
+        if frozen_from and frozen_to:
+            frozen_from_dt = service._parse_date(frozen_from)
+            frozen_to_dt = service._parse_date(frozen_to)
+            for idx, stop in enumerate(table["plan"]["stops"]):
+                arrival = stop.get("arrival", "")
+                departure = stop.get("departure", "")
+                if not arrival or not departure:
+                    continue
+                stop_start = service._parse_date(arrival)
+                stop_end = service._parse_date(departure)
+                if not (stop_end < frozen_from_dt or stop_start > frozen_to_dt):
+                    frozen_indices.add(idx)
+
         rows_html = []
         for row in table["rows"]:
             cells = []
             for port in table["ports"]:
                 cell = row[port]
                 if cell["stop_index"] is not None:
+                    is_frozen = cell["stop_index"] in frozen_indices
+                    frozen_attrs = " readonly style='background:#eef3ff;' " if is_frozen else ""
+                    frozen_cell_style = " style='background:#eef3ff;' " if is_frozen else ""
                     cells.append(
-                        f"<td><input type='date' name='stop_{cell['stop_index']}_arrival' value='{cell['arrival']}'></td>"
+                        f"<td{frozen_cell_style}><input type='date' name='stop_{cell['stop_index']}_arrival' value='{cell['arrival']}'{frozen_attrs}></td>"
                     )
                     cells.append(
-                        f"<td><input type='date' name='stop_{cell['stop_index']}_departure' value='{cell['departure']}'></td>"
+                        f"<td{frozen_cell_style}><input type='date' name='stop_{cell['stop_index']}_departure' value='{cell['departure']}'{frozen_attrs}></td>"
                     )
                 else:
                     cells.append(f"<td><span class='placeholder'>{table['placeholder']}</span></td><td><span class='placeholder'>{table['placeholder']}</span></td>")
             rows_html.append(f"<tr>{''.join(cells)}</tr>")
 
-        frozen_until = table["plan"].get("frozen_until", "")
         freeze_note = (
-            f"Заходы с датой отхода по {frozen_until} фиксированы и не изменяются при обновлении."
-            if frozen_until
+            f"Заходы в периоде {frozen_from} — {frozen_to} фиксированы и не изменяются при обновлении."
+            if frozen_from and frozen_to
             else ""
         )
 
@@ -520,8 +563,11 @@ def render_index(service: PlannerService, selected_id: Optional[int], flash_text
 <h2>{html.escape(table['plan']['ship'])} ({table['plan']['start_date']} — {table['plan']['end_date']})</h2>
 <form method='post' action='/plans/{table['plan']['id']}/update'>
 <div class='row'>
-<label>Фиксировать период до даты (включительно)
-<input type='date' name='frozen_until' value='{frozen_until}'>
+<label>Заморозка с
+<input type='date' name='frozen_from' value='{frozen_from}'>
+</label>
+<label>по
+<input type='date' name='frozen_to' value='{frozen_to}'>
 </label>
 </div>
 {f"<p style='margin:8px 0 0;color:#1f4d8f;font-size:13px;'>{html.escape(freeze_note)}</p>" if freeze_note else ""}
@@ -533,7 +579,7 @@ def render_index(service: PlannerService, selected_id: Optional[int], flash_text
 </div>
 <div class='row'>
 <button class='primary' type='submit'>Обновить расписание</button>
-<a href='/plans/{table['plan']['id']}/clear' style='text-decoration:none;' onclick="return confirm('Очистить всё расписание выбранного плана?');"><button type='button'>Очистить расписание</button></a>
+<button type='submit' formaction='/plans/{table['plan']['id']}/clear' formmethod='post' onclick="return confirm('Очистить только даты в таблице выбранного плана?');">Очистить даты в расписании</button>
 <a href='/plans/{table['plan']['id']}/export' style='text-decoration:none;'><button type='button'>Экспорт CSV</button></a>
 <a href='/plans/{table['plan']['id']}/export-html' style='text-decoration:none;'><button type='button'>Экспорт HTML</button></a>
 </div>
@@ -732,8 +778,9 @@ def create_handler(service: PlannerService):
                     form = self._read_form()
                     plan_id = int(self.path.split("/")[2])
                     plan = service.get_plan(plan_id)
-                    frozen_until = form.get("frozen_until", [""])[0]
-                    service.set_frozen_until(plan_id, frozen_until)
+                    frozen_from = form.get("frozen_from", [""])[0]
+                    frozen_to = form.get("frozen_to", [""])[0]
+                    service.set_frozen_range(plan_id, frozen_from, frozen_to)
                     plan = service.get_plan(plan_id)
                     manual_map = {}
                     for idx in range(len(plan["stops"])):
