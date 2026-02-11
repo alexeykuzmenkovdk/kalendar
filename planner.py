@@ -250,7 +250,7 @@ class PlannerService:
             row_idx = idx // route_len
             if row_idx not in frozen_rows:
                 continue
-            if stop.get("arrival") and stop.get("departure"):
+            if (stop.get("arrival") and stop.get("departure")) or stop.get("skipped"):
                 frozen_indices.add(idx)
 
         for idx, stop in enumerate(plan["stops"]):
@@ -334,7 +334,7 @@ class PlannerService:
             if row < 0 or row > max_row:
                 raise ValueError("Некорректный индекс периода заморозки")
             row_has_data = any(
-                stop.get("arrival") and stop.get("departure")
+                (stop.get("arrival") and stop.get("departure")) or stop.get("skipped")
                 for idx, stop in enumerate(plan["stops"])
                 if idx // route_len == row
             )
