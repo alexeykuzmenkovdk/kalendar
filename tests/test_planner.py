@@ -71,9 +71,12 @@ class PlannerServiceTests(unittest.TestCase):
         self.assertIn("Приход", page)
         self.assertIn("Отход", page)
         self.assertIn("Обновить расписание", page)
-        self.assertIn("Очистить расписание", page)
+        self.assertIn("Очистить даты в расписании", page)
         self.assertIn("Экспорт CSV", page)
         self.assertIn("Экспорт HTML", page)
+        self.assertIn("Заморозка с", page)
+        self.assertIn("name='frozen_from'", page)
+        self.assertIn("name='frozen_to'", page)
 
     def test_manual_table_allows_skipped_port(self):
         plan = self.service.create_plan(
@@ -101,7 +104,7 @@ class PlannerServiceTests(unittest.TestCase):
         frozen_departure = plan["stops"][1]["departure"]
         frozen_arrival = plan["stops"][1]["arrival"]
 
-        self.service.set_frozen_until(plan["id"], frozen_departure)
+        self.service.set_frozen_range(plan["id"], plan["stops"][1]["arrival"], frozen_departure)
         self.service.update_plan_from_manual_table(
             plan["id"],
             {
@@ -114,7 +117,7 @@ class PlannerServiceTests(unittest.TestCase):
         self.assertEqual(updated["stops"][1]["arrival"], frozen_arrival)
         self.assertEqual(updated["stops"][1]["departure"], frozen_departure)
         self.assertEqual(updated["stops"][3]["arrival"], "2026-03-15")
-        self.assertEqual(updated["frozen_until"], frozen_departure)
+        self.assertEqual(updated["frozen_to"], frozen_departure)
 
     def test_frozen_stops_remain_unchanged_even_if_not_prefix(self):
         plan = self.service.create_plan(
@@ -132,7 +135,7 @@ class PlannerServiceTests(unittest.TestCase):
         frozen_arrival = changed_plan["stops"][1]["arrival"]
         frozen_departure = changed_plan["stops"][1]["departure"]
 
-        self.service.set_frozen_until(plan["id"], frozen_departure)
+        self.service.set_frozen_range(plan["id"], changed_plan["stops"][1]["arrival"], frozen_departure)
         self.service.update_plan_from_manual_table(
             plan["id"],
             {
@@ -150,12 +153,13 @@ class PlannerServiceTests(unittest.TestCase):
             route=["Владивосток", "Невельск"],
             start_date="2026-06-01",
         )
-        self.service.set_frozen_until(plan["id"], plan["stops"][0]["departure"])
+        self.service.set_frozen_range(plan["id"], plan["stops"][0]["arrival"], plan["stops"][0]["departure"])
         self.service.clear_plan_schedule(plan["id"])
 
         updated = self.service.get_plan(plan["id"])
-        self.assertEqual(updated["frozen_until"], "")
-        self.assertTrue(all(stop["skipped"] for stop in updated["stops"]))
+        self.assertEqual(updated["frozen_from"], "")
+        self.assertEqual(updated["frozen_to"], "")
+        self.assertTrue(all(not stop["skipped"] for stop in updated["stops"]))
         self.assertTrue(all(stop["arrival"] == "" and stop["departure"] == "" for stop in updated["stops"]))
 
     def test_export_plan_csv_contains_header(self):
