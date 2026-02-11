@@ -17,7 +17,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 DATE_FMT = "%Y-%m-%d"
 DEFAULT_DB = Path("planner_db.json")
-HALF_YEAR_DAYS = 182
+PLAN_HORIZON_DAYS = 365
 PLACEHOLDER = "¤"
 
 DEFAULT_SHIPS = [
@@ -127,7 +127,7 @@ class PlannerService:
                 raise ValueError(f"Неизвестный порт: {port}")
 
         start = self._parse_date(start_date)
-        limit = start + timedelta(days=HALF_YEAR_DAYS)
+        limit = start + timedelta(days=PLAN_HORIZON_DAYS)
         stops: List[Stop] = []
 
         current_departure = start
@@ -179,6 +179,16 @@ class PlannerService:
                 self.db.save()
                 return
         raise ValueError(f"План #{plan_id} не найден")
+
+    def clear_plan_schedule(self, plan_id: int) -> Dict:
+        plan = self.get_plan(plan_id)
+        for stop in plan["stops"]:
+            stop["arrival"] = ""
+            stop["departure"] = ""
+            stop["skipped"] = True
+        plan["frozen_until"] = ""
+        self.db.save()
+        return plan
 
     def _apply_shift(self, plan: Dict, start_index: int, shift_days: int) -> None:
         for idx in range(start_index, len(plan["stops"])):
@@ -272,22 +282,17 @@ class PlannerService:
             if arrival != old_arrival or departure != old_departure:
                 locked_indices.add(idx)
 
-        mutable_start_idx = 0
-        while mutable_start_idx < len(plan["stops"]) and mutable_start_idx in frozen_indices:
-            mutable_start_idx += 1
-
         prev_port = None
         current_departure = self._parse_date(plan["start_date"])
-        for idx in range(mutable_start_idx):
-            frozen_stop = plan["stops"][idx]
-            if frozen_stop.get("skipped"):
-                continue
-            prev_port = frozen_stop["port"]
-            current_departure = self._parse_date(frozen_stop["departure"])
 
-        for idx in range(mutable_start_idx, len(plan["stops"])):
+        for idx in range(len(plan["stops"])):
             stop = plan["stops"][idx]
             if stop.get("skipped"):
+                continue
+
+            if idx in frozen_indices:
+                prev_port = stop["port"]
+                current_departure = self._parse_date(stop["departure"])
                 continue
 
             if idx in locked_indices:
@@ -528,6 +533,7 @@ def render_index(service: PlannerService, selected_id: Optional[int], flash_text
 </div>
 <div class='row'>
 <button class='primary' type='submit'>Обновить расписание</button>
+<a href='/plans/{table['plan']['id']}/clear' style='text-decoration:none;' onclick="return confirm('Очистить всё расписание выбранного плана?');"><button type='button'>Очистить расписание</button></a>
 <a href='/plans/{table['plan']['id']}/export' style='text-decoration:none;'><button type='button'>Экспорт CSV</button></a>
 <a href='/plans/{table['plan']['id']}/export-html' style='text-decoration:none;'><button type='button'>Экспорт HTML</button></a>
 </div>
@@ -744,6 +750,12 @@ def create_handler(service: PlannerService):
                             manual_map[idx] = (arr, dep)
                     service.update_plan_from_manual_table(plan_id, manual_map)
                     self._send_html(render_index(service, plan_id, "Расписание обновлено с учетом ручных правок"))
+                    return
+
+                if self.path.startswith("/plans/") and self.path.endswith("/clear"):
+                    plan_id = int(self.path.split("/")[2])
+                    service.clear_plan_schedule(plan_id)
+                    self._send_html(render_index(service, plan_id, "Расписание очищено"))
                     return
 
                 if self.path == "/technical/save":
