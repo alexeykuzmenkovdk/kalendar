@@ -91,6 +91,31 @@ class PlannerServiceTests(unittest.TestCase):
         self.assertEqual(updated["stops"][1]["arrival"], "")
         self.assertEqual(updated["stops"][1]["departure"], "")
 
+
+    def test_frozen_period_keeps_initial_segment_unchanged(self):
+        plan = self.service.create_plan(
+            ship="т/х «Ерофей Хабаров»",
+            route=["Владивосток", "Славянка", "Невельск"],
+            start_date="2026-02-01",
+        )
+        frozen_departure = plan["stops"][1]["departure"]
+        frozen_arrival = plan["stops"][1]["arrival"]
+
+        self.service.set_frozen_until(plan["id"], frozen_departure)
+        self.service.update_plan_from_manual_table(
+            plan["id"],
+            {
+                0: ("2026-03-10", "2026-03-11"),
+                3: ("2026-03-15", "2026-03-16"),
+            },
+        )
+
+        updated = self.service.get_plan(plan["id"])
+        self.assertEqual(updated["stops"][1]["arrival"], frozen_arrival)
+        self.assertEqual(updated["stops"][1]["departure"], frozen_departure)
+        self.assertEqual(updated["stops"][3]["arrival"], "2026-03-15")
+        self.assertEqual(updated["frozen_until"], frozen_departure)
+
     def test_export_plan_csv_contains_header(self):
         plan = self.service.create_plan(
             ship="т/х «Ерофей Хабаров»",
